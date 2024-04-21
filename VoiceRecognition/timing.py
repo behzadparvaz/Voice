@@ -45,7 +45,6 @@ def median_filter(x: torch.Tensor, filter_width: int):
             )
 
     if result is None:
-        # sort() is faster than torch.median (https://github.com/pytorch/pytorch/issues/51450)
         result = x.unfold(-1, filter_width, 1).sort()[0][..., filter_width // 2]
 
     if ndim <= 2:
@@ -182,7 +181,6 @@ def find_alignment(
         ]
     ).to(model.device)
 
-    # install hooks on the cross attention layers to retrieve the attention weights
     QKs = [None] * model.dims.n_text_layer
     hooks = [
         block.cross_attn.register_forward_hook(
@@ -201,7 +199,6 @@ def find_alignment(
     for hook in hooks:
         hook.remove()
 
-    # heads * tokens * frames
     weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
     weights = weights[:, :, : num_frames // 2]
     weights = (weights * qk_scale).softmax(dim=-1)
@@ -215,11 +212,6 @@ def find_alignment(
 
     words, word_tokens = tokenizer.split_to_word_tokens(text_tokens + [tokenizer.eot])
     if len(word_tokens) <= 1:
-        # return on eot only
-        # >>> np.pad([], (1, 0))
-        # array([0.])
-        # This results in crashes when we lookup jump_times with float, like
-        # IndexError: arrays used as indices must be of integer (or boolean) type
         return []
     word_boundaries = np.pad(np.cumsum([len(t) for t in word_tokens[:-1]]), (1, 0))
 
@@ -241,14 +233,12 @@ def find_alignment(
 
 
 def merge_punctuations(alignment: List[WordTiming], prepended: str, appended: str):
-    # merge prepended punctuations
     i = len(alignment) - 2
     j = len(alignment) - 1
     while i >= 0:
         previous = alignment[i]
         following = alignment[j]
         if previous.word.startswith(" ") and previous.word.strip() in prepended:
-            # prepend it to the following word
             following.word = previous.word + following.word
             following.tokens = previous.tokens + following.tokens
             previous.word = ""
@@ -257,14 +247,12 @@ def merge_punctuations(alignment: List[WordTiming], prepended: str, appended: st
             j = i
         i -= 1
 
-    # merge appended punctuations
     i = 0
     j = 1
     while j < len(alignment):
         previous = alignment[i]
         following = alignment[j]
         if not previous.word.endswith(" ") and following.word in appended:
-            # append it to the previous word
             previous.word = previous.word + following.word
             previous.tokens = previous.tokens + following.tokens
             following.word = ""
@@ -338,11 +326,7 @@ def add_word_timestamps(
             saved_tokens += len(timing.tokens)
             word_index += 1
 
-        # hack: truncate long words at segment boundaries.
-        # a better segmentation algorithm based on VAD should be able to replace this.
         if len(words) > 0:
-            # ensure the first and second word after a pause is not longer than
-            # twice the median word duration.
             if words[0]["end"] - last_speech_timestamp > median_duration * 4 and (
                 words[0]["end"] - words[0]["start"] > max_duration
                 or (
@@ -358,7 +342,7 @@ def add_word_timestamps(
                     words[0]["end"] = words[1]["start"] = boundary
                 words[0]["start"] = max(0, words[0]["end"] - max_duration)
 
-            # prefer the segment-level start timestamp if the first word is too long.
+
             if (
                 segment["start"] < words[0]["end"]
                 and segment["start"] - 0.5 > words[0]["start"]
@@ -369,7 +353,7 @@ def add_word_timestamps(
             else:
                 segment["start"] = words[0]["start"]
 
-            # prefer the segment-level end timestamp if the last word is too long.
+
             if (
                 segment["end"] > words[-1]["start"]
                 and segment["end"] + 0.5 < words[-1]["end"]

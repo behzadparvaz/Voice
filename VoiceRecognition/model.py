@@ -41,7 +41,7 @@ class Linear(nn.Linear):
         )
 
 
-class Conv1d(nn.Conv1d):
+class Conv2d(nn.Conv2d):
     def _conv_forward(
         self, x: Tensor, weight: Tensor, bias: Optional[Tensor]
     ) -> Tensor:
@@ -51,7 +51,6 @@ class Conv1d(nn.Conv1d):
 
 
 def sinusoids(length, channels, max_timescale=10000):
-    """Returns sinusoids for positional embedding"""
     assert channels % 2 == 0
     log_timescale_increment = np.log(max_timescale) / (channels // 2 - 1)
     inv_timescales = torch.exp(-log_timescale_increment * torch.arange(channels // 2))
@@ -78,12 +77,9 @@ class MultiHeadAttention(nn.Module):
         q = self.query(x)
 
         if kv_cache is None or xa is None or self.key not in kv_cache:
-            # hooks, if installed (i.e. kv_cache is not None), will prepend the cached kv tensors;
-            # otherwise, perform key/value projections for self- or cross-attention as usual.
             k = self.key(x if xa is None else xa)
             v = self.value(x if xa is None else xa)
         else:
-            # for cross-attention, calculate keys and values once and reuse in subsequent calls.
             k = kv_cache[self.key]
             v = kv_cache[self.value]
 
@@ -145,8 +141,8 @@ class AudioEncoder(nn.Module):
         self, n_mels: int, n_ctx: int, n_state: int, n_head: int, n_layer: int
     ):
         super().__init__()
-        self.conv1 = Conv1d(n_mels, n_state, kernel_size=3, padding=1)
-        self.conv2 = Conv1d(n_state, n_state, kernel_size=3, stride=2, padding=1)
+        self.conv1 = Conv2d(n_mels, n_state, kernel_size=3, padding=1)
+        self.conv2 = Conv2d(n_state, n_state, kernel_size=3, stride=2, padding=1)
         self.register_buffer("positional_embedding", sinusoids(n_ctx, n_state))
 
         self.blocks: Iterable[ResidualAttentionBlock] = nn.ModuleList(
@@ -155,10 +151,6 @@ class AudioEncoder(nn.Module):
         self.ln_post = LayerNorm(n_state)
 
     def forward(self, x: Tensor):
-        """
-        x : torch.Tensor, shape = (batch_size, n_mels, n_ctx)
-            the mel spectrogram of the audio
-        """
         x = F.gelu(self.conv1(x))
         x = F.gelu(self.conv2(x))
         x = x.permute(0, 2, 1)
@@ -194,12 +186,6 @@ class TextDecoder(nn.Module):
         self.register_buffer("mask", mask, persistent=False)
 
     def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):
-        """
-        x : torch.LongTensor, shape = (batch_size, <= n_ctx)
-            the text tokens
-        xa : torch.Tensor, shape = (batch_size, n_audio_ctx, n_audio_state)
-            the encoded audio features to be attended on
-        """
         offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
         x = (
             self.token_embedding(x)
@@ -236,8 +222,6 @@ class Whisper(nn.Module):
             self.dims.n_text_head,
             self.dims.n_text_layer,
         )
-        # use the last half among the decoder layers for time alignment by default;
-        # to use a specific set of heads, see `set_alignment_heads()` below.
         all_heads = torch.zeros(
             self.dims.n_text_layer, self.dims.n_text_head, dtype=torch.bool
         )
@@ -277,19 +261,6 @@ class Whisper(nn.Module):
         return self.dims.n_vocab - 51765 - int(self.is_multilingual)
 
     def install_kv_cache_hooks(self, cache: Optional[dict] = None):
-        """
-        The `MultiHeadAttention` module optionally accepts `kv_cache` which stores the key and value
-        tensors calculated for the previous positions. This method returns a dictionary that stores
-        all caches, and the necessary hooks for the key and value projection modules that save the
-        intermediate tensors to be reused during later calculations.
-
-        Returns
-        -------
-        cache : Dict[nn.Module, torch.Tensor]
-            A dictionary object mapping the key/value projection modules to its cache
-        hooks : List[RemovableHandle]
-            List of PyTorch RemovableHandle objects to stop the hooks to be called
-        """
         cache = {**cache} if cache is not None else {}
         hooks = []
 
